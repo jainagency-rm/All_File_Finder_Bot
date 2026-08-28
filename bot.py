@@ -1,9 +1,9 @@
 import os
 import asyncio
+import aiohttp
 from aiohttp import web
 
 # --- STRICT FIX FOR PYROGRAM ON RENDER (PYTHON 3.14) ---
-# Yeh code Pyrogram import hone se pehle aana zaroori hai
 try:
     asyncio.get_running_loop()
 except RuntimeError:
@@ -20,12 +20,52 @@ except ValueError:
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-# --- Initialize Bot ---
 app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# --- UI & LOGIC ---
 user_search_states = {}
 
+# --- HELPER FUNCTION: Convert Bytes to MB/GB ---
+def format_size(size_in_bytes):
+    try:
+        size = int(size_in_bytes)
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024.0:
+                return f"{size:.2f} {unit}"
+            size /= 1024.0
+    except ValueError:
+        return "Unknown Size"
+
+# --- REAL SEARCH ENGINES ---
+async def search_google_drive(query):
+    # Dummy delay to simulate search, aage chal kar ise Custom Search API se replace kar sakte hain
+    await asyncio.sleep(1)
+    return [] # Abhi ise khali rakhte hain taaki bot seedha Torrent API par jaye
+
+async def search_torrent(query):
+    # APIBay (The Pirate Bay API) ka use karke real data nikalna
+    url = f"https://apibay.org/q.php?q={query}"
+    results = []
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # Agar id '0' aati hai, matlab koi result nahi mila
+                    if data and isinstance(data, list) and data[0].get("id") != "0":
+                        # Top 3 results nikalenge
+                        for item in data[:3]:
+                            results.append({
+                                "title": item.get("name", "Unknown File"),
+                                "size": format_size(item.get("size", 0)),
+                                "seeders": item.get("seeders", "0"),
+                                "hash": item.get("info_hash", "")
+                            })
+    except Exception as e:
+        print(f"API Error: {e}")
+        
+    return results
+
+# --- UI & LOGIC ---
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("🎬 Movies & Series", callback_data="cat_movies"), InlineKeyboardButton("📚 Books & Education", callback_data="cat_books")],
@@ -42,16 +82,6 @@ SUB_MENUS = {
     "cat_courses": [[InlineKeyboardButton("Coding & Dev", callback_data="sub_devcourses"), InlineKeyboardButton("Business & Marketing", callback_data="sub_bizcourses")], [InlineKeyboardButton("Design & UI/UX", callback_data="sub_designcourses")], [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]],
     "cat_audio": [[InlineKeyboardButton("FLAC / Lossless", callback_data="sub_flac"), InlineKeyboardButton("MP3 Albums", callback_data="sub_mp3")], [InlineKeyboardButton("Audiobooks & Podcasts", callback_data="sub_audiobooks")], [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]]
 }
-
-async def search_google_drive(query, category):
-    await asyncio.sleep(1.5)
-    if "pro" in query.lower() or "guide" in query.lower():
-        return [{"title": f"{query} [Safe_Gdrive_Link].zip", "size": "1.2 GB"}]
-    return []
-
-async def search_torrent(query, category):
-    await asyncio.sleep(2)
-    return [{"title": f"{query} [Torrent_Repack].rar", "size": "3.5 GB"}]
 
 # --- BOT HANDLERS ---
 @app.on_message(filters.command("start"))
@@ -76,8 +106,8 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         sub_category_name = data.replace("sub_", "").upper()
         user_search_states[user_id] = sub_category_name
         await callback_query.message.edit_text(f"🔍 **Selected Category:** `{sub_category_name}`\n\n⌨️ Now, please send the **name** of the item you want to search for:")
-    elif data == "leech_file":
-        await callback_query.answer("Leeching process will start soon...", show_alert=True)
+    elif data.startswith("leech_"):
+        await callback_query.answer("☁️ Leeching feature is under development! File will be downloaded soon.", show_alert=True)
 
 @app.on_message(filters.text & filters.private & ~filters.command("start"))
 async def handle_search_query(client: Client, message: Message):
@@ -89,21 +119,28 @@ async def handle_search_query(client: Client, message: Message):
     category = user_search_states[user_id]
     query = message.text
 
-    status_msg = await message.reply_text(f"🔍 Searching for **{query}** in `{category}`...\n\n🔄 Checking Google Drive first (100% Safe)...")
-    drive_results = await search_google_drive(query, category)
+    status_msg = await message.reply_text(f"🔍 Searching real databases for **{query}**...\n\n🔄 Please wait...")
     
-    if drive_results:
-        await status_msg.edit_text(f"✅ **Found on Google Drive!** (Fast & Safe)\n\n📦 **Name:** {drive_results[0]['title']}\n💾 **Size:** {drive_results[0]['size']}\n\n*Click below to leech directly to Telegram.*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Leech Now", callback_data="leech_file")]]))
-        del user_search_states[user_id]
-        return
-
-    await status_msg.edit_text(f"⚠️ Not found on Drive. Switching to Torrent Search for **{query}**...")
-    torrent_results = await search_torrent(query, category)
+    # Torrent API Search
+    torrent_results = await search_torrent(query)
 
     if torrent_results:
-        await status_msg.edit_text(f"✅ **Found on Torrent!**\n\n📦 **Name:** {torrent_results[0]['title']}\n💾 **Size:** {torrent_results[0]['size']}\n\n🛡 *Note: This will be downloaded to cloud and scanned by ClamAV before delivery.*\n\n*Click below to Start Cloud Leech.*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("☁️ Download & Scan", callback_data="leech_file")]]))
+        # Pura message format karna
+        result_text = f"✅ **Top Real Results for:** `{query}`\n\n"
+        buttons = []
+        
+        for i, res in enumerate(torrent_results):
+            result_text += f"**{i+1}.** {res['title']}\n"
+            result_text += f"💾 **Size:** {res['size']} | 🌱 **Seeders:** {res['seeders']}\n\n"
+            
+            # Har file ke niche ek alag button taaki future me exact wo file leech ho sake
+            buttons.append([InlineKeyboardButton(f"☁️ Leech File {i+1}", callback_data=f"leech_{i}")])
+
+        result_text += "🛡 *Note: Click below to fetch the specific file via cloud.*"
+        
+        await status_msg.edit_text(result_text, reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await status_msg.edit_text("❌ Sorry, no results found on Drive or Torrents. Try a different name or category.")
+        await status_msg.edit_text("❌ Sorry, no results found on public trackers. Try a different name.")
     
     del user_search_states[user_id]
 
@@ -112,7 +149,6 @@ async def health_check(request):
     return web.Response(text="Bot is running perfectly on Render!")
 
 async def main():
-    # Start web server
     server = web.Application()
     server.router.add_get('/', health_check)
     runner = web.AppRunner(server)
@@ -122,19 +158,13 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     
-    # Start bot
     await app.start()
-    print("Bot is successfully running!")
-    
-    # Keep it alive
+    print("Bot is successfully running with Real API!")
     await idle()
-    
-    # Cleanup on exit
     await app.stop()
     await runner.cleanup()
 
 if __name__ == "__main__":
-    # Event loop jo upar set kiya gaya tha, wahi use hoga
     loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(main())
