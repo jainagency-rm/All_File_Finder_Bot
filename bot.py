@@ -2,10 +2,18 @@ import os
 import asyncio
 import threading
 from flask import Flask
+
+# --- FIX FOR PYROGRAM EVENT LOOP ERROR ON RENDER ---
+try:
+    loop = asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 
-# Environment Variables se credentials lena (Render ke liye zaroori)
+# Environment Variables
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -21,9 +29,8 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8000))
     web_app.run(host="0.0.0.0", port=port)
 
-# Web server ko background thread me start karna
+# Web server ko alag thread me start karna taaki bot ko block na kare
 threading.Thread(target=run_web_server, daemon=True).start()
-
 
 # --- TELEGRAM BOT LOGIC ---
 app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
