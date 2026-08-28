@@ -1,19 +1,35 @@
 import os
 import asyncio
+import threading
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 
-# Verified Credentials from your setup
-API_ID = 39172670
-API_HASH = "4d9af38b80d07645a68ed98e2cbe27d4"
-BOT_TOKEN = "8952239255:AAEKtDHWMtMv0AnWqfjGkZicr3pRy6Cwto"
+# Environment Variables se credentials lena (Render ke liye zaroori)
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
+# --- DUMMY WEB SERVER (To keep Render Web Service alive) ---
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def health_check():
+    return "Bot is running perfectly on Render!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8000))
+    web_app.run(host="0.0.0.0", port=port)
+
+# Web server ko background thread me start karna
+threading.Thread(target=run_web_server, daemon=True).start()
+
+
+# --- TELEGRAM BOT LOGIC ---
 app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# User State Management (Bot yaad rakhega user kis category me hai)
 user_search_states = {}
 
-# Main Categories Keyboard
 def get_main_menu():
     keyboard = [
         [
@@ -31,7 +47,6 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# Sub-categories for precise filtering
 SUB_MENUS = {
     "cat_movies": [
         [InlineKeyboardButton("Bollywood", callback_data="sub_bolly"), InlineKeyboardButton("Hollywood", callback_data="sub_holly")],
@@ -65,27 +80,18 @@ SUB_MENUS = {
     ]
 }
 
-# --- SEARCH MODULE LOGIC ---
-
 async def search_google_drive(query, category):
-    # Dummy processing time
     await asyncio.sleep(1.5)
-    # Abhi ke liye logic: Agar query me "pro" ya "guide" hai, to Drive me milega
     if "pro" in query.lower() or "guide" in query.lower():
         return [{"title": f"{query} [Safe_Gdrive_Link].zip", "size": "1.2 GB"}]
-    return [] # Nahi mila
+    return []
 
 async def search_torrent(query, category):
-    # Dummy processing time
     await asyncio.sleep(2)
-    # Agar Drive me nahi mila, to Torrent ka result dega
     return [{"title": f"{query} [Torrent_Repack].rar", "size": "3.5 GB"}]
-
-# --- HANDLERS ---
 
 @app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
-    # Jab user naya start kare, to state clear kar do
     if message.from_user.id in user_search_states:
         del user_search_states[message.from_user.id]
         
@@ -115,7 +121,6 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
     elif data.startswith("sub_"):
         sub_category_name = data.replace("sub_", "").upper()
-        # Yahan user ki category save kar li
         user_search_states[user_id] = sub_category_name
         
         await callback_query.message.edit_text(
@@ -129,7 +134,6 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
 async def handle_search_query(client: Client, message: Message):
     user_id = message.from_user.id
     
-    # Check agar user ne category select nahi ki hai
     if user_id not in user_search_states:
         await message.reply_text("⚠️ Please select a category from /start first.")
         return
@@ -139,7 +143,6 @@ async def handle_search_query(client: Client, message: Message):
 
     status_msg = await message.reply_text(f"🔍 Searching for **{query}** in `{category}`...\n\n🔄 Checking Google Drive first (100% Safe)...")
 
-    # Step 1: Drive Search
     drive_results = await search_google_drive(query, category)
     
     if drive_results:
@@ -150,10 +153,9 @@ async def handle_search_query(client: Client, message: Message):
             "*Click below to leech directly to Telegram.*",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Leech Now", callback_data="leech_file")]])
         )
-        del user_search_states[user_id] # Search poora hone par state clear kar di
+        del user_search_states[user_id]
         return
 
-    # Step 2: Torrent Fallback (Agar Drive me nahi mila)
     await status_msg.edit_text(f"⚠️ Not found on Drive. Switching to Torrent Search for **{query}**...")
     torrent_results = await search_torrent(query, category)
 
@@ -169,7 +171,7 @@ async def handle_search_query(client: Client, message: Message):
     else:
         await status_msg.edit_text("❌ Sorry, no results found on Drive or Torrents. Try a different name or category.")
     
-    del user_search_states[user_id] # State clear
+    del user_search_states[user_id]
 
 if __name__ == "__main__":
     print("Bot is running...")
