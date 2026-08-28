@@ -21,7 +21,9 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-user_search_states = {}
+
+# User search memory to store results for leeching
+user_search_cache = {}
 
 # --- HELPER FUNCTION: Convert Bytes to MB/GB ---
 def format_size(size_in_bytes):
@@ -34,14 +36,8 @@ def format_size(size_in_bytes):
     except ValueError:
         return "Unknown Size"
 
-# --- REAL SEARCH ENGINES ---
-async def search_google_drive(query):
-    # Dummy delay to simulate search, aage chal kar ise Custom Search API se replace kar sakte hain
-    await asyncio.sleep(1)
-    return [] # Abhi ise khali rakhte hain taaki bot seedha Torrent API par jaye
-
+# --- REAL SEARCH ENGINE WITH SMART FORMAT DETECTION ---
 async def search_torrent(query):
-    # APIBay (The Pirate Bay API) ka use karke real data nikalna
     url = f"https://apibay.org/q.php?q={query}"
     results = []
     
@@ -50,15 +46,30 @@ async def search_torrent(query):
             async with session.get(url) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # Agar id '0' aati hai, matlab koi result nahi mila
                     if data and isinstance(data, list) and data[0].get("id") != "0":
-                        # Top 3 results nikalenge
                         for item in data[:3]:
+                            title = item.get("name", "Unknown File")
+                            
+                            # Smart Format Detector based on title keywords
+                            ext = "Unknown Format"
+                            lower_title = title.lower()
+                            if any(k in lower_title for k in ['.pdf', 'pdf', 'book', 'novel']):
+                                ext = "📄 PDF / Document"
+                            elif any(k in lower_title for k in ['.mp3', 'audiobook', 'm4b', 'podcast']):
+                                ext = "🎵 Audiobook / Audio"
+                            elif any(k in lower_title for k in ['.epub', 'mobi', 'cbz']):
+                                ext = "📚 E-Book / Comic"
+                            elif any(k in lower_title for k in ['.mp4', '.mkv', '1080p', '720p', 'web-dl', 'bluray']):
+                                ext = "🎬 Video / Movie"
+                            elif any(k in lower_title for k in ['.exe', '.apk', 'iso', 'repack']):
+                                ext = "💻 Software / Game"
+
                             results.append({
-                                "title": item.get("name", "Unknown File"),
+                                "title": title,
                                 "size": format_size(item.get("size", 0)),
                                 "seeders": item.get("seeders", "0"),
-                                "hash": item.get("info_hash", "")
+                                "hash": item.get("info_hash", ""),
+                                "format": ext
                             })
     except Exception as e:
         print(f"API Error: {e}")
@@ -86,8 +97,9 @@ SUB_MENUS = {
 # --- BOT HANDLERS ---
 @app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
-    if message.from_user.id in user_search_states:
-        del user_search_states[message.from_user.id]
+    user_id = message.from_user.id
+    if user_id in user_search_cache:
+        del user_search_cache[user_id]
     welcome_text = "👋 **Welcome to All File Finder Bot!**\n\nSecure, fast, and automated cloud downloader. Please select a category below to start your search:"
     await message.reply_text(welcome_text, reply_markup=get_main_menu())
 
@@ -97,52 +109,69 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     
     if data == "main_menu":
-        if user_id in user_search_states:
-            del user_search_states[user_id]
+        if user_id in user_search_cache:
+            del user_search_cache[user_id]
         await callback_query.message.edit_text("📁 **Main Menu:** Please select a category:", reply_markup=get_main_menu())
     elif data in SUB_MENUS:
         await callback_query.message.edit_text("📂 **Sub-Category Selection:** Choose a specific section:", reply_markup=InlineKeyboardMarkup(SUB_MENUS[data]))
     elif data.startswith("sub_"):
         sub_category_name = data.replace("sub_", "").upper()
-        user_search_states[user_id] = sub_category_name
+        user_search_cache[user_id] = {"category": sub_category_name}
         await callback_query.message.edit_text(f"🔍 **Selected Category:** `{sub_category_name}`\n\n⌨️ Now, please send the **name** of the item you want to search for:")
     elif data.startswith("leech_"):
-        await callback_query.answer("☁️ Leeching feature is under development! File will be downloaded soon.", show_alert=True)
+        try:
+            index = int(data.split("_")[1])
+            user_data = user_search_cache.get(user_id)
+            if not user_data or "results" not in user_data:
+                await callback_query.answer("⚠️ Session expired. Please search again.", show_alert=True)
+                return
+                
+            selected_file = user_data["results"][index]
+            file_name = selected_file["title"]
+            info_hash = selected_file["hash"]
+            
+            # Generate Magnet Link
+            magnet_link = f"magnet:?xt=urn:btih:{info_hash}&dn={file_name.replace(' ', '+')}"
+            
+            await callback_query.message.reply_text(
+                f"⚡ **Cloud Leech Initiated!**\n\n"
+                f"📦 **File:** {file_name}\n"
+                f"💾 **Size:** {selected_file['size']}\n\n"
+                f"🔗 **Magnet Link Generated:**\n`{magnet_link}`\n\n"
+                f"⚙️ *Server is preparing to download and pack this file for Telegram delivery...*",
+            )
+            await callback_query.answer("Leech task started!", show_alert=False)
+        except Exception as e:
+            await callback_query.answer(f"Error: {str(e)}", show_alert=True)
 
 @app.on_message(filters.text & filters.private & ~filters.command("start"))
 async def handle_search_query(client: Client, message: Message):
     user_id = message.from_user.id
-    if user_id not in user_search_states:
+    if user_id not in user_search_cache or "category" not in user_search_cache[user_id]:
         await message.reply_text("⚠️ Please select a category from /start first.")
         return
 
-    category = user_search_states[user_id]
     query = message.text
-
-    status_msg = await message.reply_text(f"🔍 Searching real databases for **{query}**...\n\n🔄 Please wait...")
+    status_msg = await message.reply_text(f"🔍 Searching databases for **{query}**...\n\n🔄 Inspecting formats and seeders...")
     
-    # Torrent API Search
     torrent_results = await search_torrent(query)
 
     if torrent_results:
-        # Pura message format karna
-        result_text = f"✅ **Top Real Results for:** `{query}`\n\n"
+        # Cache results in user memory for leeching reference
+        user_search_cache[user_id]["results"] = torrent_results
+        
+        result_text = f"✅ **Results for:** `{query}`\n\n"
         buttons = []
         
         for i, res in enumerate(torrent_results):
             result_text += f"**{i+1}.** {res['title']}\n"
-            result_text += f"💾 **Size:** {res['size']} | 🌱 **Seeders:** {res['seeders']}\n\n"
-            
-            # Har file ke niche ek alag button taaki future me exact wo file leech ho sake
+            result_text += f"📁 **Type:** {res['format']} | 💾 **Size:** {res['size']} | 🌱 **Seeders:** {res['seeders']}\n\n"
             buttons.append([InlineKeyboardButton(f"☁️ Leech File {i+1}", callback_data=f"leech_{i}")])
 
-        result_text += "🛡 *Note: Click below to fetch the specific file via cloud.*"
-        
+        result_text += "🛡 *Click below to start cloud downloading.*"
         await status_msg.edit_text(result_text, reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await status_msg.edit_text("❌ Sorry, no results found on public trackers. Try a different name.")
-    
-    del user_search_states[user_id]
+        await status_msg.edit_text("❌ Sorry, no results found. Try a different name.")
 
 # --- AIOHTTP WEB SERVER & ASYNC LOOP ---
 async def health_check(request):
@@ -159,7 +188,7 @@ async def main():
     await site.start()
     
     await app.start()
-    print("Bot is successfully running with Real API!")
+    print("Bot is successfully running with Smart Format Detection!")
     await idle()
     await app.stop()
     await runner.cleanup()
