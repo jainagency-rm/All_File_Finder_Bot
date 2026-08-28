@@ -22,7 +22,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# User search memory to store results for leeching
+# User search memory to store results for leeching safely
 user_search_cache = {}
 
 # --- HELPER FUNCTION: Convert Bytes to MB/GB ---
@@ -36,7 +36,7 @@ def format_size(size_in_bytes):
     except ValueError:
         return "Unknown Size"
 
-# --- REAL SEARCH ENGINE WITH SMART FORMAT DETECTION ---
+# --- REAL SEARCH ENGINE WITH STRICT FORMAT DETECTION ---
 async def search_torrent(query):
     url = f"https://apibay.org/q.php?q={query}"
     results = []
@@ -49,19 +49,17 @@ async def search_torrent(query):
                     if data and isinstance(data, list) and data[0].get("id") != "0":
                         for item in data[:3]:
                             title = item.get("name", "Unknown File")
-                            
-                            # Smart Format Detector based on title keywords
-                            ext = "Unknown Format"
                             lower_title = title.lower()
-                            if any(k in lower_title for k in ['.pdf', 'pdf', 'book', 'novel']):
-                                ext = "📄 PDF / Document"
-                            elif any(k in lower_title for k in ['.mp3', 'audiobook', 'm4b', 'podcast']):
+                            
+                            # Strict and Ordered Format Detection
+                            ext = "📁 Other / Archive"
+                            if any(k in lower_title for k in ['audiobook', '.mp3', '.m4b', 'podcast', 'mirk']):
                                 ext = "🎵 Audiobook / Audio"
-                            elif any(k in lower_title for k in ['.epub', 'mobi', 'cbz']):
-                                ext = "📚 E-Book / Comic"
-                            elif any(k in lower_title for k in ['.mp4', '.mkv', '1080p', '720p', 'web-dl', 'bluray']):
+                            elif any(k in lower_title for k in ['.pdf', 'epub', 'mobi', 'cbz', 'novel', 'book']):
+                                ext = "📚 E-Book / Document"
+                            elif any(k in lower_title for k in ['.mp4', '.mkv', '1080p', '720p', 'web-dl', 'bluray', 'hdrip']):
                                 ext = "🎬 Video / Movie"
-                            elif any(k in lower_title for k in ['.exe', '.apk', 'iso', 'repack']):
+                            elif any(k in lower_title for k in ['.exe', '.apk', 'iso', 'repack', 'setup']):
                                 ext = "💻 Software / Game"
 
                             results.append({
@@ -120,27 +118,33 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.message.edit_text(f"🔍 **Selected Category:** `{sub_category_name}`\n\n⌨️ Now, please send the **name** of the item you want to search for:")
     elif data.startswith("leech_"):
         try:
+            # Safely parse the exact index (0, 1, or 2)
             index = int(data.split("_")[1])
             user_data = user_search_cache.get(user_id)
+            
             if not user_data or "results" not in user_data:
                 await callback_query.answer("⚠️ Session expired. Please search again.", show_alert=True)
                 return
                 
-            selected_file = user_data["results"][index]
+            results_list = user_data["results"]
+            if index >= len(results_list):
+                await callback_query.answer("⚠️ Invalid selection. Please search again.", show_alert=True)
+                return
+                
+            selected_file = results_list[index]
             file_name = selected_file["title"]
             info_hash = selected_file["hash"]
             
-            # Generate Magnet Link
             magnet_link = f"magnet:?xt=urn:btih:{info_hash}&dn={file_name.replace(' ', '+')}"
             
             await callback_query.message.reply_text(
-                f"⚡ **Cloud Leech Initiated!**\n\n"
+                f"⚡ **Cloud Leech Initiated (File {index + 1})!**\n\n"
                 f"📦 **File:** {file_name}\n"
                 f"💾 **Size:** {selected_file['size']}\n\n"
                 f"🔗 **Magnet Link Generated:**\n`{magnet_link}`\n\n"
                 f"⚙️ *Server is preparing to download and pack this file for Telegram delivery...*",
             )
-            await callback_query.answer("Leech task started!", show_alert=False)
+            await callback_query.answer(f"Selected File {index + 1} processed!", show_alert=False)
         except Exception as e:
             await callback_query.answer(f"Error: {str(e)}", show_alert=True)
 
@@ -157,7 +161,7 @@ async def handle_search_query(client: Client, message: Message):
     torrent_results = await search_torrent(query)
 
     if torrent_results:
-        # Cache results in user memory for leeching reference
+        # Store exact list in cache mapped to user ID
         user_search_cache[user_id]["results"] = torrent_results
         
         result_text = f"✅ **Results for:** `{query}`\n\n"
@@ -166,6 +170,7 @@ async def handle_search_query(client: Client, message: Message):
         for i, res in enumerate(torrent_results):
             result_text += f"**{i+1}.** {res['title']}\n"
             result_text += f"📁 **Type:** {res['format']} | 💾 **Size:** {res['size']} | 🌱 **Seeders:** {res['seeders']}\n\n"
+            # Explicitly match callback data index with loop index i (0, 1, 2)
             buttons.append([InlineKeyboardButton(f"☁️ Leech File {i+1}", callback_data=f"leech_{i}")])
 
         result_text += "🛡 *Click below to start cloud downloading.*"
@@ -188,7 +193,7 @@ async def main():
     await site.start()
     
     await app.start()
-    print("Bot is successfully running with Smart Format Detection!")
+    print("Bot is successfully running with Fixed Index Mapping!")
     await idle()
     await app.stop()
     await runner.cleanup()
