@@ -1,4 +1,5 @@
 import os
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 
@@ -8,6 +9,9 @@ API_HASH = "4d9af38b80d07645a68ed98e2cbe27d4"
 BOT_TOKEN = "8952239255:AAEKtDHWMtMv0AnWqfjGkZicr3pRy6Cwto"
 
 app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# User State Management (Bot yaad rakhega user kis category me hai)
+user_search_states = {}
 
 # Main Categories Keyboard
 def get_main_menu():
@@ -61,8 +65,30 @@ SUB_MENUS = {
     ]
 }
 
+# --- SEARCH MODULE LOGIC ---
+
+async def search_google_drive(query, category):
+    # Dummy processing time
+    await asyncio.sleep(1.5)
+    # Abhi ke liye logic: Agar query me "pro" ya "guide" hai, to Drive me milega
+    if "pro" in query.lower() or "guide" in query.lower():
+        return [{"title": f"{query} [Safe_Gdrive_Link].zip", "size": "1.2 GB"}]
+    return [] # Nahi mila
+
+async def search_torrent(query, category):
+    # Dummy processing time
+    await asyncio.sleep(2)
+    # Agar Drive me nahi mila, to Torrent ka result dega
+    return [{"title": f"{query} [Torrent_Repack].rar", "size": "3.5 GB"}]
+
+# --- HANDLERS ---
+
 @app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
+    # Jab user naya start kare, to state clear kar do
+    if message.from_user.id in user_search_states:
+        del user_search_states[message.from_user.id]
+        
     welcome_text = (
         "👋 **Welcome to All File Finder Bot!**\n\n"
         "Secure, fast, and automated cloud downloader. "
@@ -73,8 +99,11 @@ async def start_command(client: Client, message: Message):
 @app.on_callback_query()
 async def handle_callbacks(client: Client, callback_query: CallbackQuery):
     data = callback_query.data
+    user_id = callback_query.from_user.id
     
     if data == "main_menu":
+        if user_id in user_search_states:
+            del user_search_states[user_id]
         await callback_query.message.edit_text(
             "📁 **Main Menu:** Please select a category:",
             reply_markup=get_main_menu()
@@ -86,10 +115,61 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         )
     elif data.startswith("sub_"):
         sub_category_name = data.replace("sub_", "").upper()
+        # Yahan user ki category save kar li
+        user_search_states[user_id] = sub_category_name
+        
         await callback_query.message.edit_text(
-            f"🔍 **Selected:** `{sub_category_name}`\n\n"
-            "Now, please send the **name** of the item you want to search for (e.g., *Interstellar*, *Photoshop*, *Python Guide*):"
+            f"🔍 **Selected Category:** `{sub_category_name}`\n\n"
+            "⌨️ Now, please send the **name** of the item you want to search for (e.g., *Interstellar*, *Photoshop*, *Python Guide*):"
         )
+    elif data == "leech_file":
+        await callback_query.answer("Leeching process will start soon...", show_alert=True)
+
+@app.on_message(filters.text & filters.private & ~filters.command("start"))
+async def handle_search_query(client: Client, message: Message):
+    user_id = message.from_user.id
+    
+    # Check agar user ne category select nahi ki hai
+    if user_id not in user_search_states:
+        await message.reply_text("⚠️ Please select a category from /start first.")
+        return
+
+    category = user_search_states[user_id]
+    query = message.text
+
+    status_msg = await message.reply_text(f"🔍 Searching for **{query}** in `{category}`...\n\n🔄 Checking Google Drive first (100% Safe)...")
+
+    # Step 1: Drive Search
+    drive_results = await search_google_drive(query, category)
+    
+    if drive_results:
+        await status_msg.edit_text(
+            f"✅ **Found on Google Drive!** (Fast & Safe)\n\n"
+            f"📦 **Name:** {drive_results[0]['title']}\n"
+            f"💾 **Size:** {drive_results[0]['size']}\n\n"
+            "*Click below to leech directly to Telegram.*",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚡ Leech Now", callback_data="leech_file")]])
+        )
+        del user_search_states[user_id] # Search poora hone par state clear kar di
+        return
+
+    # Step 2: Torrent Fallback (Agar Drive me nahi mila)
+    await status_msg.edit_text(f"⚠️ Not found on Drive. Switching to Torrent Search for **{query}**...")
+    torrent_results = await search_torrent(query, category)
+
+    if torrent_results:
+        await status_msg.edit_text(
+            f"✅ **Found on Torrent!**\n\n"
+            f"📦 **Name:** {torrent_results[0]['title']}\n"
+            f"💾 **Size:** {torrent_results[0]['size']}\n\n"
+            "🛡 *Note: This will be downloaded to cloud and scanned by ClamAV before delivery.*\n\n"
+            "*Click below to Start Cloud Leech.*",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("☁️ Download & Scan", callback_data="leech_file")]])
+        )
+    else:
+        await status_msg.edit_text("❌ Sorry, no results found on Drive or Torrents. Try a different name or category.")
+    
+    del user_search_states[user_id] # State clear
 
 if __name__ == "__main__":
     print("Bot is running...")
