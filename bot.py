@@ -1,6 +1,14 @@
 import os
 import asyncio
 from aiohttp import web
+
+# --- STRICT FIX FOR PYROGRAM ON RENDER (PYTHON 3.14) ---
+# Yeh code Pyrogram import hone se pehle aana zaroori hai
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 
@@ -99,7 +107,7 @@ async def handle_search_query(client: Client, message: Message):
     
     del user_search_states[user_id]
 
-# --- AIOHTTP WEB SERVER & ASYNC LOOP (RENDER FIX) ---
+# --- AIOHTTP WEB SERVER & ASYNC LOOP ---
 async def health_check(request):
     return web.Response(text="Bot is running perfectly on Render!")
 
@@ -110,7 +118,7 @@ async def main():
     runner = web.AppRunner(server)
     await runner.setup()
     
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     
@@ -126,7 +134,9 @@ async def main():
     await runner.cleanup()
 
 if __name__ == "__main__":
+    # Event loop jo upar set kiya gaya tha, wahi use hoga
+    loop = asyncio.get_event_loop()
     try:
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except Exception as e:
         print(f"Critical Error: {e}")
