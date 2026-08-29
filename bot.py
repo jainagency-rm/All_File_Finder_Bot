@@ -194,24 +194,26 @@ async def health_check(request):
     return web.Response(text="Bot is running perfectly on Render!")
 
 async def main():
+    port = int(os.environ.get("PORT", 10000))
+    
+    # Start aiohttp web server for Render keep-alive
     server = web.Application()
     server.router.add_get('/', health_check)
     runner = web.AppRunner(server)
     await runner.setup()
-    
-    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
+    print(f"Web server started on port {port}")
     
+    # Start Pyrogram Bot
     await app.start()
-    print("Bot is successfully running!")
-    await idle()
-    await app.stop()
-    await runner.cleanup()
+    print("Bot is successfully running and connected to Telegram!")
+    
+    # Keep the application alive
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(main())
-    except Exception as e:
-        print(f"Critical Error: {e}")
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot stopped by user.")
