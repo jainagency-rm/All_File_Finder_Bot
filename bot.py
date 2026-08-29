@@ -2,6 +2,7 @@ import os
 import asyncio
 import aiohttp
 import urllib.parse
+import requests
 from aiohttp import web
 
 from pyrogram import Client, filters, idle
@@ -24,6 +25,7 @@ app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT
 userbot = Client("SearchUserbot", api_id=API_ID, api_hash=API_HASH, session_string=USER_SESSION_STRING)
 
 user_search_cache = {}
+MAX_DIRECT_SIZE = 1.5 * 1024 * 1024 * 1024  # 1.5 GB limit
 
 def format_size(size_in_bytes):
     try:
@@ -42,7 +44,6 @@ def format_size(size_in_bytes):
 async def search_telegram(query):
     results = []
     try:
-        # Userbot safely searches Telegram globally
         async for msg in userbot.search_global(query, limit=5):
             if msg.document or msg.video or msg.audio:
                 file_obj = msg.document or msg.video or msg.audio
@@ -130,7 +131,6 @@ async def handle_search_query(client, message):
     user_id = message.from_user.id
     status_msg = await message.reply_text(f"🔍 **Stage 1:** Searching Telegram Drives for `{query}`...")
     
-    # Cascade Search Logic
     results = await search_telegram(query)
     
     if not results:
@@ -170,15 +170,34 @@ async def process_delivery(client, callback_query):
     if res["source"] == "telegram":
         await status_msg.edit_text("📤 **Extracting file from Telegram Drive & Forwarding...**")
         try:
-            # Userbot fetches the original message, then main bot copies it to you
             msg = await userbot.get_messages(res["chat_id"], res["msg_id"])
             await msg.copy(user_id, caption=f"✅ {res['title']}")
             await status_msg.delete()
         except Exception as e:
             await status_msg.edit_text(f"❌ Failed to extract Telegram file: {e}")
             
-    # Protocol 2: Web DDL Delivery
+    # Protocol 2: Web DDL Delivery (Smart Download for small files < 1.5GB)
     elif res["source"] == "filepursuit":
+        if res["raw_size"] > 0 and res["raw_size"] <= MAX_DIRECT_SIZE:
+            await status_msg.edit_text(f"📥 **Downloading file from Web DDL...**\n`{res['title']}`")
+            loop = asyncio.get_event_loop()
+            filename = f"file_{index}.bin"
+            try:
+                def fetch_web_file():
+                    with requests.get(res["link"], stream=True, timeout=30) as r:
+                        r.raise_for_status()
+                        with open(filename, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+                await loop.run_in_executor(None, fetch_web_file)
+                await status_msg.edit_text("📤 **Uploading file to Telegram...**")
+                await client.send_document(chat_id=user_id, document=filename, caption=f"✅ {res['title']}")
+                os.remove(filename)
+                await status_msg.delete()
+                return
+            except Exception:
+                if os.path.exists(filename): os.remove(filename)
+        
+        # Fallback to web link if download fails or file is large (> 1.5GB)
         await status_msg.edit_text(
             f"🔗 **Direct Web Download Link:**\n\n"
             f"📁 **Name:** `{res['title']}`\n"
@@ -212,7 +231,6 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     
-    # Both Clients Start Here
     await app.start()
     await userbot.start()
     print("🚀 SUPER-BOT IS LIVE WITH USERBOT AND FILEPURSUIT!")
