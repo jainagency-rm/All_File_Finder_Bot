@@ -3,7 +3,6 @@ import asyncio
 import aiohttp
 from aiohttp import web
 
-# --- STRICT FIX FOR PYROGRAM ON RENDER (PYTHON 3.14) ---
 try:
     asyncio.get_running_loop()
 except RuntimeError:
@@ -12,7 +11,6 @@ except RuntimeError:
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 
-# --- Fetching Credentials Safely ---
 try:
     API_ID = int(os.environ.get("API_ID", 0))
 except ValueError:
@@ -22,10 +20,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 app = Client("AllFileFinderBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# User search memory to store results for leeching safely
 user_search_cache = {}
 
-# --- HELPER FUNCTION: Convert Bytes to MB/GB ---
 def format_size(size_in_bytes):
     try:
         size = int(size_in_bytes)
@@ -36,7 +32,6 @@ def format_size(size_in_bytes):
     except ValueError:
         return "Unknown Size"
 
-# --- REAL SEARCH ENGINE WITH STRICT FORMAT DETECTION ---
 async def search_torrent(query):
     url = f"https://apibay.org/q.php?q={query}"
     results = []
@@ -47,23 +42,25 @@ async def search_torrent(query):
                 if response.status == 200:
                     data = await response.json()
                     if data and isinstance(data, list) and data[0].get("id") != "0":
-                        for item in data[:3]:
+                        for item in data[:5]:
                             title = item.get("name", "Unknown File")
                             lower_title = title.lower()
+                            raw_size = int(item.get("size", 0))
                             
                             ext = "📁 Other / Archive"
-                            if any(k in lower_title for k in ['audiobook', '.mp3', '.m4b', 'podcast', 'mirk']):
+                            if any(k in lower_title for k in ['audiobook', '.mp3', '.m4b', 'podcast']):
                                 ext = "🎵 Audiobook / Audio"
-                            elif any(k in lower_title for k in ['.pdf', 'epub', 'mobi', 'cbz', 'novel', 'book']):
+                            elif any(k in lower_title for k in ['.pdf', 'epub', 'mobi', 'cbz', 'novel']):
                                 ext = "📚 E-Book / Document"
-                            elif any(k in lower_title for k in ['.mp4', '.mkv', '1080p', '720p', 'web-dl', 'bluray', 'hdrip']):
+                            elif any(k in lower_title for k in ['.mp4', '.mkv', '1080p', '720p', 'web-dl', 'bluray']):
                                 ext = "🎬 Video / Movie"
-                            elif any(k in lower_title for k in ['.exe', '.apk', 'iso', 'repack', 'setup']):
+                            elif any(k in lower_title for k in ['.exe', '.apk', 'iso', 'repack']):
                                 ext = "💻 Software / Game"
 
                             results.append({
                                 "title": title,
-                                "size": format_size(item.get("size", 0)),
+                                "raw_size": raw_size,
+                                "size": format_size(raw_size),
                                 "seeders": item.get("seeders", "0"),
                                 "hash": item.get("info_hash", ""),
                                 "format": ext
@@ -73,7 +70,6 @@ async def search_torrent(query):
         
     return results
 
-# --- UI & LOGIC ---
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("🎬 Movies & Series", callback_data="cat_movies"), InlineKeyboardButton("📚 Books & Education", callback_data="cat_books")],
@@ -91,13 +87,12 @@ SUB_MENUS = {
     "cat_audio": [[InlineKeyboardButton("FLAC / Lossless", callback_data="sub_flac"), InlineKeyboardButton("MP3 Albums", callback_data="sub_mp3")], [InlineKeyboardButton("Audiobooks & Podcasts", callback_data="sub_audiobooks")], [InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu")]]
 }
 
-# --- BOT HANDLERS ---
 @app.on_message(filters.command("start"))
 async def start_command(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id in user_search_cache:
         del user_search_cache[user_id]
-    welcome_text = "👋 **Welcome to All File Finder Bot!**\n\nSecure, fast, and automated cloud downloader. Please select a category below to start your search:"
+    welcome_text = "👋 **Welcome to All File Finder Bot!**\n\nSelect a category below to start your search:"
     await message.reply_text(welcome_text, reply_markup=get_main_menu())
 
 @app.on_callback_query()
@@ -114,7 +109,7 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
     elif data.startswith("sub_"):
         sub_category_name = data.replace("sub_", "").upper()
         user_search_cache[user_id] = {"category": sub_category_name}
-        await callback_query.message.edit_text(f"🔍 **Selected Category:** `{sub_category_name}`\n\n⌨️ Now, please send the **name** of the item you want to search for:")
+        await callback_query.message.edit_text(f"🔍 **Selected Category:** `{sub_category_name}`\n\n⌨️ Now, send the **name** of the item you want to search for:")
     elif data.startswith("leech_"):
         try:
             index = int(data.split("_")[1])
@@ -126,33 +121,46 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
                 
             results_list = user_data["results"]
             if index >= len(results_list):
-                await callback_query.answer("⚠️ Invalid selection. Please search again.", show_alert=True)
+                await callback_query.answer("⚠️ Invalid selection.", show_alert=True)
                 return
                 
             selected_file = results_list[index]
             file_name = selected_file["title"]
+            raw_size = selected_file["raw_size"]
+            info_hash = selected_file["hash"]
+            
+            MAX_DIRECT_SIZE = 1.5 * 1024 * 1024 * 1024  # 1.5 GB in bytes
             
             status_msg = await callback_query.message.reply_text(
-                f"⚡ **Cloud Leech Started (File {index + 1})!**\n\n"
-                f"📦 **File:** {file_name}\n"
-                f"💾 **Size:** {selected_file['size']}\n\n"
-                f"🔄 *Fetching file payload directly to Telegram storage...*"
+                f"🔍 **Analyzing file requirements...**\n\n📦 `{file_name}`\n💾 Size: {selected_file['size']}"
             )
-            await callback_query.answer(f"Processing File {index + 1}...", show_alert=False)
-
-            # Direct file delivery simulation / attachment handler
-            await asyncio.sleep(2)
+            await callback_query.answer("Processing file...", show_alert=False)
             
-            # Agar file choti hai toh use direct document ke roop mein bhejna
-            # Hum yahan ek placeholder file ya direct text/document bhej rahe hain taaki user ko file mil jaye
-            await client.send_message(
-                chat_id=user_id,
-                text=f"✅ **Here is your requested file:**\n\n📁 `{file_name}`\n💾 Size: {selected_file['size']}\n\n*(Delivered securely via cloud pipeline)*"
+            # Smart Priority Check
+            if raw_size > 0 and raw_size <= MAX_DIRECT_SIZE:
+                # Priority 1: Try Direct Download / Processing if available, 
+                # Since Apibay only provides torrent hashes, we route to fallback or direct link generation.
+                # Note: Apibay does not provide native DDLs, so we present the magnet link with size confirmation.
+                pass
+
+            # Fallback to Magnet Link since Apibay is a torrent indexer (No native DDLs)
+            magnet_link = f"magnet:?xt=urn:btih:{info_hash}&dn={urllib_quote(file_name)}" if info_hash else "Not available"
+            
+            await status_msg.edit_text(
+                f"📋 **File Details & Delivery Option:**\n\n"
+                f"📁 **Name:** `{file_name}`\n"
+                f"💾 **Size:** {selected_file['size']}\n\n"
+                f"🔗 **Magnet / Direct Link:**\n`{magnet_link}`\n\n"
+                f"💡 *Tip: Copy this link and open it in your iPhone's Documents app or Seedr.cc to start instant download.*"
             )
-            await status_msg.delete()
             
         except Exception as e:
             await callback_query.answer(f"Error: {str(e)}", show_alert=True)
+
+# Simple url quote helper
+import urllib.parse
+def urllib_quote(text):
+    return urllib.parse.quote(text)
 
 @app.on_message(filters.text & filters.private & ~filters.command("start"))
 async def handle_search_query(client: Client, message: Message):
@@ -162,7 +170,7 @@ async def handle_search_query(client: Client, message: Message):
         return
 
     query = message.text
-    status_msg = await message.reply_text(f"🔍 Searching databases for **{query}**...\n\n🔄 Inspecting formats and seeders...")
+    status_msg = await message.reply_text(f"🔍 Searching databases for **{query}**...")
     
     torrent_results = await search_torrent(query)
 
@@ -175,14 +183,13 @@ async def handle_search_query(client: Client, message: Message):
         for i, res in enumerate(torrent_results):
             result_text += f"**{i+1}.** {res['title']}\n"
             result_text += f"📁 **Type:** {res['format']} | 💾 **Size:** {res['size']} | 🌱 **Seeders:** {res['seeders']}\n\n"
-            buttons.append([InlineKeyboardButton(f"☁️ Leech File {i+1}", callback_data=f"leech_{i}")])
+            buttons.append([InlineKeyboardButton(f"📥 Get Link / File {i+1}", callback_data=f"leech_{i}")])
 
-        result_text += "🛡 *Click below to start cloud downloading.*"
+        result_text += "🛡 *Select an option above to get download links.*"
         await status_msg.edit_text(result_text, reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await status_msg.edit_text("❌ Sorry, no results found. Try a different name.")
+        await status_msg.edit_text("❌ No results found. Try a different search term.")
 
-# --- AIOHTTP WEB SERVER & ASYNC LOOP ---
 async def health_check(request):
     return web.Response(text="Bot is running perfectly on Render!")
 
@@ -197,7 +204,7 @@ async def main():
     await site.start()
     
     await app.start()
-    print("Bot is successfully running with Direct Delivery Engine!")
+    print("Bot is successfully running!")
     await idle()
     await app.stop()
     await runner.cleanup()
