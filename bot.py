@@ -2,9 +2,13 @@ import os
 import asyncio
 import aiohttp
 from aiohttp import web
-import urllib.parse
 
-from pyrogram import Client, filters
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 
 try:
@@ -132,23 +136,31 @@ async def handle_callbacks(client: Client, callback_query: CallbackQuery):
             )
             await callback_query.answer("Processing file...", show_alert=False)
             
-            # Smart Hybrid Check (< 1.5 GB vs Magnet Link Fallback)
+            # Smart Priority Check
             if raw_size > 0 and raw_size <= MAX_DIRECT_SIZE:
-                # Direct download logic placeholder if DDL is available
+                # Priority 1: Try Direct Download / Processing if available, 
+                # Since Apibay only provides torrent hashes, we route to fallback or direct link generation.
+                # Note: Apibay does not provide native DDLs, so we present the magnet link with size confirmation.
                 pass
 
-            magnet_link = f"magnet:?xt=urn:btih:{info_hash}&dn={urllib.parse.quote(file_name)}" if info_hash else "Not available"
+            # Fallback to Magnet Link since Apibay is a torrent indexer (No native DDLs)
+            magnet_link = f"magnet:?xt=urn:btih:{info_hash}&dn={urllib_quote(file_name)}" if info_hash else "Not available"
             
             await status_msg.edit_text(
                 f"📋 **File Details & Delivery Option:**\n\n"
                 f"📁 **Name:** `{file_name}`\n"
                 f"💾 **Size:** {selected_file['size']}\n\n"
-                f"🔗 **Magnet Link:**\n`{magnet_link}`\n\n"
+                f"🔗 **Magnet / Direct Link:**\n`{magnet_link}`\n\n"
                 f"💡 *Tip: Copy this link and open it in your iPhone's Documents app or Seedr.cc to start instant download.*"
             )
             
         except Exception as e:
             await callback_query.answer(f"Error: {str(e)}", show_alert=True)
+
+# Simple url quote helper
+import urllib.parse
+def urllib_quote(text):
+    return urllib.parse.quote(text)
 
 @app.on_message(filters.text & filters.private & ~filters.command("start"))
 async def handle_search_query(client: Client, message: Message):
@@ -182,23 +194,24 @@ async def health_check(request):
     return web.Response(text="Bot is running perfectly on Render!")
 
 async def main():
-    port = int(os.environ.get("PORT", 10000))
-    
     server = web.Application()
     server.router.add_get('/', health_check)
     runner = web.AppRunner(server)
     await runner.setup()
+    
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"Web server started on port {port}")
     
     await app.start()
-    print("Bot is successfully running and connected to Telegram!")
-    
-    await asyncio.Event().wait()
+    print("Bot is successfully running!")
+    await idle()
+    await app.stop()
+    await runner.cleanup()
 
 if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot stopped by user.")
+        loop.run_until_complete(main())
+    except Exception as e:
+        print(f"Critical Error: {e}")
