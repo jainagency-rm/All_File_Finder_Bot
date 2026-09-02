@@ -3,3 +3,4 @@ tgcrypto
 aiohttp
 requests
 beautifulsoup4
+⁠curl_cffi
